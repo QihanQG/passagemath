@@ -21,16 +21,16 @@ Example::
     b = vector(QQ, [3, 2])
 
     out = transportation_face_embedding_from_matrix(A, b)
-    M = out["tensor_M"]          # symbolic 3D tensor
-    u = out["marginals_u"]       # first-index plane marginals
-    v = out["marginals_v"]       # second-index plane marginals
-    w = out["marginals_w"]       # third-index plane marginals
-    sigma = out["sigma"]         # original variables -> tensor coordinates
+    M = out.tensor_M          # symbolic 3D tensor
+    u = out.marginals_u       # first-index plane marginals
+    v = out.marginals_v       # second-index plane marginals
+    w = out.marginals_w       # third-index plane marginals
+    sigma = out.sigma         # original variables -> tensor coordinates
 
-The returned dictionary keeps the final tensor, forced zero entries,
+The returned result object keeps the final tensor, forced zero entries,
 enabled entries, marginals, and coordinate map at the top level. Intermediate
 data from coefficient reduction and tensor construction are available under
-``out["reduction"]`` and ``out["embedding"]``.
+``out.reduction`` and ``out.embedding``.
 
 REFERENCES:
 
@@ -93,6 +93,90 @@ class Tensor3D(SageObject):
             return bracket(bracket(latex(x) for x in row) for row in plane)
 
         return bracket(rows(plane) for plane in self.data)
+
+
+class _TransportationConstructionResult(SageObject):
+    """Small Sage-style result object with attribute access."""
+
+    _fields = ()
+
+    def __init__(self, **kwds):
+        missing = [field for field in self._fields if field not in kwds]
+        if missing:
+            raise ValueError(
+                f"missing fields for {self.__class__.__name__}: {missing}"
+            )
+
+        extra = [field for field in kwds if field not in self._fields]
+        if extra:
+            raise ValueError(
+                f"unknown fields for {self.__class__.__name__}: {extra}"
+            )
+
+        for field in self._fields:
+            setattr(self, field, kwds[field])
+
+    def as_dict(self):
+        """Return a shallow dictionary copy of this result."""
+        return {field: getattr(self, field) for field in self._fields}
+
+    def _repr_(self):
+        return f"{self.__class__.__name__} with fields {self._fields}"
+
+
+class CoefficientReductionResult(_TransportationConstructionResult):
+    _fields = (
+        "new_constraints",
+        "new_vars_list",
+        "new_vars_grouped",
+        "k_values",
+        "sigma_1",
+        "original_constraints",
+        "original_vars_list",
+        "A",
+        "b",
+        "n_chain",
+    )
+
+
+class TransportationEmbeddingResult(_TransportationConstructionResult):
+    _fields = (
+        "tensor_M",
+        "zero_set_S",
+        "active_set_V",
+        "marginals_u",
+        "marginals_v",
+        "marginals_w",
+        "sigma_2",
+        "constraints",
+        "A",
+        "b",
+        "vars_list",
+        "r_values",
+        "R_partition",
+        "k_plus",
+        "k_minus",
+        "slack_level",
+        "copied_vars",
+        "complements",
+        "complement_rules",
+        "recovery_rules",
+        "U",
+    )
+
+
+class TransportationFaceEmbeddingResult(_TransportationConstructionResult):
+    _fields = (
+        "tensor_M",
+        "zero_set_S",
+        "active_set_V",
+        "marginals_u",
+        "marginals_v",
+        "marginals_w",
+        "sigma",
+        "reduction",
+        "embedding",
+    )
 
 def _b_to_column(b):
     if hasattr(b, "nrows") and hasattr(b, "ncols"):
@@ -270,13 +354,13 @@ def _sum2d(mat):
     return sum(sum(row) for row in mat)
 
 def _verify_reduction(result):
-    A = result["A"]
-    b = result["b"]
-    vars_list = result["original_vars_list"]
-    k_values = result["k_values"]
-    new_vars_grouped = result["new_vars_grouped"]
-    new_constraints = result["new_constraints"]
-    n_chain = result["n_chain"]
+    A = result.A
+    b = result.b
+    vars_list = result.original_vars_list
+    k_values = result.k_values
+    new_vars_grouped = result.new_vars_grouped
+    new_constraints = result.new_constraints
+    n_chain = result.n_chain
 
     sub_back = {
         new_vars_grouped[j][s]: 2 ** s * vars_list[j]
@@ -301,13 +385,13 @@ def _verify_reduction(result):
     return True
 
 def _verify_embedding(result):
-    M = result["tensor_M"]
-    A = result["A"]
-    b = result["b"]
-    vars_list = result["vars_list"]
-    U = result["U"]
-    complement_rules = result["complement_rules"]
-    recovery_rules = result["recovery_rules"]
+    M = result.tensor_M
+    A = result.A
+    b = result.b
+    vars_list = result.vars_list
+    U = result.U
+    complement_rules = result.complement_rules
+    recovery_rules = result.recovery_rules
 
     for k in range(A.nrows()):
         expected = sum(A[k, j] * vars_list[j] for j in range(A.ncols())) - b[k, 0]
@@ -320,30 +404,30 @@ def _verify_embedding(result):
             f"Plane {k} mismatch"
         )
 
-    for y, coord in result["sigma_2"].items():
-        assert coord in result["active_set_V"], (
+    for y, coord in result.sigma_2.items():
+        assert coord in result.active_set_V, (
             f"sigma_2[{y}] does not land in V"
         )
 
     return True
 
 def _verify_transportation_face_embedding(result):
-    reduction = result["reduction"]
-    embedding = result["embedding"]
+    reduction = result.reduction
+    embedding = result.embedding
 
     _verify_reduction(reduction)
     _verify_embedding(embedding)
 
     for key in ("tensor_M", "zero_set_S", "active_set_V",
                 "marginals_u", "marginals_v", "marginals_w"):
-        assert result[key] == embedding[key], (
+        assert getattr(result, key) == getattr(embedding, key), (
             f"Transportation-face embedding wrapper mismatch at {key}"
         )
 
-    for y in reduction["original_vars_list"]:
-        x_j0 = reduction["sigma_1"][y]
-        expected_coord = embedding["sigma_2"][x_j0]
-        assert result["sigma"][y] == expected_coord, (
+    for y in reduction.original_vars_list:
+        x_j0 = reduction.sigma_1[y]
+        expected_coord = embedding.sigma_2[x_j0]
+        assert result.sigma[y] == expected_coord, (
             f"sigma composition failed for {y}"
         )
 
@@ -400,7 +484,7 @@ def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=No
                                   in zip(bits, new_vars_grouped[j]))
         new_constraints.append(new_lhs == b[i, 0])
 
-    result = dict(
+    result = CoefficientReductionResult(
         new_constraints=new_constraints,
         new_vars_list=new_vars_list,
         new_vars_grouped=new_vars_grouped,
@@ -513,7 +597,7 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,  origi
         for j in range(ncols)
     }
 
-    result = dict(
+    result = TransportationEmbeddingResult(
         tensor_M=M,
         zero_set_S=zero_set_S,
         active_set_V=active_set_V,
@@ -567,9 +651,9 @@ def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None,  ori
         A = matrix(QQ, [[1, 1, 0], [1, 0, 1]])
         b = vector(QQ, [3, 2])
         out = transportation_face_embedding_from_matrix(A, b)
-        out["sigma"]          # original variables -> tensor coordinates
-        out["tensor_M"]       # symbolic 3D tensor
-        out["marginals_w"]    # third-index plane marginals
+        out.sigma          # original variables -> tensor coordinates
+        out.tensor_M       # symbolic 3D tensor
+        out.marginals_w    # third-index plane marginals
 
     Set ``verify=False`` for faster runs after the code has already been tested
     on your examples.
@@ -588,23 +672,23 @@ def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None,  ori
 
     embedding = polytope_3waytransportation_from_matrix(
         *_reduced_constraints_to_matrix(reduction),
-        vars_list=reduction["new_vars_list"],
+        vars_list=reduction.new_vars_list,
         U=U,
         verify=False,
     )
 
     sigma = {
-        y: embedding["sigma_2"][reduction["sigma_1"][y]]
-        for y in reduction["original_vars_list"]
+        y: embedding.sigma_2[reduction.sigma_1[y]]
+        for y in reduction.original_vars_list
     }
 
-    result = dict(
-        tensor_M=embedding["tensor_M"],
-        zero_set_S=embedding["zero_set_S"],
-        active_set_V=embedding["active_set_V"],
-        marginals_u=embedding["marginals_u"],
-        marginals_v=embedding["marginals_v"],
-        marginals_w=embedding["marginals_w"],
+    result = TransportationFaceEmbeddingResult(
+        tensor_M=embedding.tensor_M,
+        zero_set_S=embedding.zero_set_S,
+        active_set_V=embedding.active_set_V,
+        marginals_u=embedding.marginals_u,
+        marginals_v=embedding.marginals_v,
+        marginals_w=embedding.marginals_w,
         sigma=sigma,
         reduction=reduction,
         embedding=embedding,
@@ -627,8 +711,8 @@ def transportation_face_embedding(P, U=None, verify=True):
 
 def _reduced_constraints_to_matrix(reduction):
     r"""Convert reduced symbolic equations back into a Sage matrix system."""
-    new_constraints = reduction["new_constraints"]
-    new_vars_list = reduction["new_vars_list"]
+    new_constraints = reduction.new_constraints
+    new_vars_list = reduction.new_vars_list
     n = len(new_vars_list)
 
     A_rows = []
