@@ -1,36 +1,21 @@
 r"""Transportation-face embedding utilities for standard-form rational polytopes.
 
-This module builds symbolic data that embeds a rational polytope
-``P = {y >= 0 : A*y = b}`` into a face of a 3-way transportation polytope (De Loera--Onn 2004,2006)
-The output is useful for inspecting the constructed tensor, its marginals,
-and the coordinates where the original variables appear.
+This module embeds a rational polytope ``P = {y >= 0 : A*y = b}`` into a face of
+a 3-way transportation polytope (De Loera--Onn 2004, 2006). The symbolic output
+facilitates inspection of the constructed array, its plane marginals, and the
+coordinates of the original variables.
 
-Most users should call one of these two functions:
+The 3-way array is stored as a list of ``h`` sparse Sage matrices over the
+Symbolic Ring (``SR``), representing each horizontal plane ``k = 0, ..., h - 1``.
 
-- ``transportation_face_embedding_from_matrix(A, b)`` if they already have a
-  matrix ``A`` and right-hand side ``b``.
-- ``transportation_face_embedding(P)`` if they already have a Sage
-  ``Polyhedron`` in standard form.
+**Main Entry Points:**
 
-Example::
+- :func:`transportation_face_embedding_from_matrix` for raw ``A`` and ``b`` inputs.
+- :func:`transportation_face_embedding` for a standard-form Sage ``Polyhedron``.
 
-    from sage.all__sagemath_symbolics import *
-    from transportation_face_embedding import transportation_face_embedding_from_matrix
-
-    A = matrix(QQ, [[1, 1, 0], [1, 0, 1]])
-    b = vector(QQ, [3, 2])
-
-    out = transportation_face_embedding_from_matrix(A, b)
-    M = out.tensor_M          # symbolic 3D tensor
-    u = out.marginals_u       # first-index plane marginals
-    v = out.marginals_v       # second-index plane marginals
-    w = out.marginals_w       # third-index plane marginals
-    sigma = out.sigma         # original variables -> tensor coordinates
-
-The returned result object keeps the final tensor, forced zero entries,
-enabled entries, marginals, and coordinate map at the top level. Intermediate
-data from coefficient reduction and tensor construction are available under
-``out.reduction`` and ``out.embedding``.
+Result objects provide top-level access to the final array, forced/enabled entries,
+marginals, and the coordinate map. Intermediate reduction and construction data are
+stored under ``out.reduction`` and ``out.embedding`` (or via ``out.as_dict()``).
 
 REFERENCES:
 
@@ -40,6 +25,7 @@ REFERENCES:
 
 - [DLO2006]_ De Loera, J. A.; Onn, S. "All Linear and Integer Programs are
   Slim 3-Way Transportation Programs." SIAM J. Optim. 17 (2006), 806--821.
+
 """
 
 from itertools import product
@@ -53,47 +39,63 @@ from sage.structure.sage_object import SageObject
 from sage.symbolic.assumptions import assume
 from sage.symbolic.ring import SR
 
-class Tensor3D(SageObject):
-    r"""Small 3D symbolic tensor used for display and slicing.
+__all__ = [
+    "coefficient_reduce",
+    "coefficient_reduce_from_matrix",
+    "polytope_3waytransportation",
+    "polytope_3waytransportation_from_matrix",
+    "transportation_face_embedding",
+    "transportation_face_embedding_from_matrix",
+    "CoefficientReductionResult",
+    "TransportationEmbeddingResult",
+    "TransportationFaceEmbeddingResult",
+]
 
-    Entries are stored as ``self.data[i][j][k]`` and can be accessed with
-    ``T[i, j, k]``. The methods ``slice_i``, ``slice_j``, and ``slice_k`` are
-    convenience helpers for inspecting fixed-index slices of the tensor.
+
+def _new_tensor_3d(shape):
+    r"""
+    Return the data structure holding the constructed 3-way array.
+
+    The array of shape ``(r, c, h)`` is stored as a list of ``h`` sparse
+    ``r x c`` matrices over ``SR``, one per horizontal plane
+    ``k = 0, ..., h - 1``. Entry ``(i, j, k)`` is ``M[k][i, j]``.
+
+    EXAMPLES::
+
+        sage: from sage.geometry.polyhedron.transportation_face_embedding \
+        ....:     import _new_tensor_3d
+        sage: M = _new_tensor_3d((2, 2, 3))
+        sage: len(M)
+        3
+        sage: M[0].nrows(), M[0].ncols()
+        (2, 2)
+        sage: M[0].is_sparse()
+        True
     """
+    r, c, h = shape
+    return [matrix(SR, r, c, sparse=True) for _ in range(h)]
 
-    def __init__(self, shape):
-        self.shape = shape
-        r, c, h = shape
-        self.data = [[[0] * h for _ in range(c)] for _ in range(r)]
 
-    def __getitem__(self, key):
-        return self.data[key[0]][key[1]][key[2]]
+def _tensor_slice_k(M, k):
+    r"""Return the horizontal ``k``-plane as an ``r x c`` Sage matrix."""
+    return M[k]
 
-    def __setitem__(self, key, value):
-        self.data[key[0]][key[1]][key[2]] = value
 
-    def slice_k(self, k):
-        return [[self.data[i][j][k] for j in range(self.shape[1])]
-                for i in range(self.shape[0])]
+def _tensor_slice_i(M, i):
+    r"""Return the slice with first index fixed to ``i`` as a ``c x h`` matrix."""
+    h = len(M)
+    c = M[0].ncols()
+    return matrix(SR, [[M[k][i, j] for k in range(h)] for j in range(c)])
 
-    def slice_i(self, i):
-        return self.data[i]
 
-    def slice_j(self, j):
-        return [self.data[i][j] for i in range(self.shape[0])]
+def _tensor_slice_j(M, j):
+    r"""Return the slice with second index fixed to ``j`` as an ``r x h`` matrix."""
+    h = len(M)
+    r = M[0].nrows()
+    return matrix(SR, [[M[k][i, j] for k in range(h)] for i in range(r)])
 
-    def _repr_(self):
-        return f"3D tensor of shape {self.shape}"
 
-    def _latex_(self):
-        def bracket(parts):
-            return r"\left[" + ", ".join(parts) + r"\right]"
-
-        def rows(plane):
-            return bracket(bracket(latex(x) for x in row) for row in plane)
-
-        return bracket(rows(plane) for plane in self.data)
-
+# Result objects.
 
 class _TransportationConstructionResult(SageObject):
     """Small Sage-style result object with attribute access."""
@@ -178,7 +180,11 @@ class TransportationFaceEmbeddingResult(_TransportationConstructionResult):
         "embedding",
     )
 
-def _b_to_column(b):
+
+#### Normalizing input ####
+
+def _b_to_column(b) -> list:
+    r"""Normalize ``b`` into a flat list of entries."""
     if hasattr(b, "nrows") and hasattr(b, "ncols"):
         if b.ncols() == 1:
             return [b[i, 0] for i in range(b.nrows())]
@@ -187,7 +193,14 @@ def _b_to_column(b):
         raise ValueError("b must be a vector, list, row matrix, or column matrix")
     return list(b)
 
+
 def _normalize_Ab(A, b):
+    r"""
+    Coerce ``A, b`` to integer matrix form by clearing rational denominators.
+
+    Returns ``(A, b)`` with ``A`` an integer matrix and ``b`` an integer column
+    matrix. Each row is scaled independently by the lcm of its denominators.
+    """
     A = matrix(QQ, A)
     b_entries = [QQ(e) for e in _b_to_column(b)]
 
@@ -212,7 +225,18 @@ def _normalize_Ab(A, b):
 
     return matrix(ZZ, A_rows_int), matrix(ZZ, len(b_int), 1, b_int)
 
+
 def _polyhedron_to_Ab(P):
+    r"""
+    Extract `(A, b)` from a Polyhedron in standard form `{y >= 0 : A y = b}`.
+
+    This checks standard-form semantically rather than syntactically. Sage may
+    rewrite coordinate nonnegativity inequalities using the equality system, so
+    inequalities in `P.inequalities_list()` do not necessarily appear literally
+    as `y_i >= 0`.
+    """
+    from sage.geometry.polyhedron.constructor import Polyhedron
+
     base = P.base_ring()
     if base not in (QQ, ZZ):
         raise ValueError(
@@ -230,54 +254,78 @@ def _polyhedron_to_Ab(P):
     if not eqns:
         raise ValueError(
             "Polyhedron has no equality constraints; this embedding expects "
-            "standard form {y >= 0 : A y = b} with a "
-            "non-trivial equation system."
+            "standard form {y >= 0 : A y = b} with a non-trivial equation "
+            "system."
         )
 
-    for ieq in P.inequalities_list():
-        c = ieq[0]
-        coeffs = ieq[1:]
-        nonzero = [(i, v) for i, v in enumerate(coeffs) if v != 0]
-        if c != 0 or len(nonzero) != 1 or nonzero[0][1] < 0:
-            raise ValueError(
-                f"Polyhedron has inequality {ieq}, which is not a coordinate "
-                f"non-negativity y_i >= 0. Only standard-form polytopes "
-                f"{{y >= 0 : A y = b}} are supported; upper bounds and general "
-                f"inequalities must be rewritten as equations using slack "
-                f"variables before calling this function."
-            )
+    ambient_dim = P.ambient_dim()
+
+    # Coordinate non-negativities y_i >= 0 as [constant, e_i].
+    nonneg_ieqs = []
+    for j in range(ambient_dim):
+        row = [ZZ(0)] * ambient_dim
+        row[j] = ZZ(1)
+        nonneg_ieqs.append([ZZ(0)] + row)
+
+    
+    P_standard = Polyhedron(eqns=eqns, ieqs=nonneg_ieqs, base_ring=QQ,)
+
+    if P != P_standard:
+        raise ValueError(
+            "Polyhedron is not equal to the standard-form polyhedron "
+            "{y >= 0 : A y = b} determined by its equality constraints. "
+            "General inequalities and upper bounds must be rewritten as "
+            "equations using slack variables before calling this function."
+        )
 
     A_rows = [eq[1:] for eq in eqns]
     b_entries = [-eq[0] for eq in eqns]
     return _normalize_Ab(matrix(QQ, A_rows), b_entries)
 
-def _make_input_variables(n, prefix="y"):
+
+def _make_input_variables(n: int, prefix: str = "y") -> list:
+    r"""Create symbolic variables ``y_1, ..., y_n`` for symbolic display."""
     return [
-        SR.symbol(f"{prefix}{j + 1}",
-                  latex_name=rf"{prefix}_{{{j + 1}}}")
+        SR.symbol(f"{prefix}{j + 1}",  latex_name=rf"{prefix}_{{{j + 1}}}")
         for j in range(n)
     ]
 
-# return `k_j = floor(log_2 max_i |a_{i,j}|)
-# If column j is zero, return 0 so that the variable still gets one copy.
-def _k_j(A, j):
+
+#### Helpers ####
+
+def _k_j(A, j: int) -> int:
+    r"""
+    Return `k_j = \lfloor \log_2 \max_i |a_{i,j}| \rfloor`.
+
+    If column ``j`` is zero, return ``0`` so the variable still gets one copy.
+    """
     m = max((abs(int(A[i, j])) for i in range(A.nrows())), default=0)
     return ZZ(m).nbits() - 1 if m > 0 else 0
 
 
-#Sage returns digits in little-endian order: n = sum_s digits[s] * 2^s.
-#Which is what we needed for  x_{j,0}, ..., x_{j,k_j}.
-def _binary_digits(n, padto):
+def _binary_digits(n: int, padto: int) -> list:
+    r"""
+    Return base-2 digits of ``n`` padded to length ``padto`` (little-endian).
+
+    Sage returns digits with `n = \sum_s d_s \cdot 2^s`, matching the chain
+    `x_{j,0}, \ldots, x_{j,k_j}`.
+    """
     return ZZ(abs(n)).digits(2, padto=padto)
 
+
 def _r_j(A, j):
+    r"""
+    Return `r_j = \max(\sum_{k:\, a_{k,j} > 0} a_{k,j},\;
+    \sum_{k:\, a_{k,j} < 0} |a_{k,j}|)`.
+    """
     col = list(A.column(j))
     positive_sum = sum(a for a in col if a > 0)
     negative_sum = sum(abs(a) for a in col if a < 0)
     return int(max(positive_sum, negative_sum))
 
-# R_j = [start, ..., start + r_j - 1].
+
 def _partition_R(r_values):
+    r"""Return the natural partition `R = \bigsqcup_j R_j` with `|R_j| = r_j`."""
     R_partition = []
     start = 0
     for rj in r_values:
@@ -285,8 +333,9 @@ def _partition_R(r_values):
         start += rj
     return R_partition
 
-#If A[k, j] = 3, then level k appears three times.
+
 def _levels_for_positive_copies(A, j):
+    r"""Return the `k^+` level sequence for variable ``j`` (pre-padding)."""
     levels = []
     for k in range(A.nrows()):
         if A[k, j] > 0:
@@ -295,19 +344,27 @@ def _levels_for_positive_copies(A, j):
 
 #If A[k, j] = -2, then level k appears two times.
 def _levels_for_negative_copies(A, j):
+    r"""Return the `k^-` level sequence for variable ``j`` (pre-padding)."""
     levels = []
     for k in range(A.nrows()):
         if A[k, j] < 0:
             levels.extend([k] * int(-A[k, j]))
     return levels
 
-def _pad_to_length(seq, target_len, fill_value):
+
+def _pad_to_length(seq: list, target_len: int, fill_value: int) -> list:
+    r"""Return ``seq`` padded to ``target_len`` with ``fill_value``."""
     return list(seq) + [fill_value] * (target_len - len(seq))
 
-#    Parenthesized superscripts mark the binary-chain index, e.g.
-#    y^{(0)}, y^{(1)}. This stays visually distinct from the stage-2
-#   square-bracket copy index.
+
 def _make_stage1_variables(vars_list, k_values):
+    r"""
+    Introduce chain variables `x_{j,0}, \ldots, x_{j,k_j}`.
+
+    Parenthesized superscripts mark the binary-chain index, e.g.
+    `y^{(0)}, y^{(1)}`, kept visually distinct from the stage-2 square-bracket
+    copy index.
+    """
     new_vars_grouped = []
     for j, y_j in enumerate(vars_list):
         name = str(y_j)
@@ -320,9 +377,14 @@ def _make_stage1_variables(vars_list, k_values):
         new_vars_grouped.append(group)
     return new_vars_grouped
 
-#    If r_j > 1, introduce square-bracket copies y_j^{[1]}, ..., y_j^{[r_j]}.
-#    If r_j = 1, reuse the original variable itself as the single copy.
+
 def _make_stage2_copies_and_complements(vars_list, r_values):
+    r"""
+    Create variable copies and complements for the Theorem 3.2 boxes.
+
+    If `r_j > 1`, introduce square-bracket copies `y_j^{[1]}, \ldots, y_j^{[r_j]}`.
+    If `r_j = 1`, reuse the original variable as the single copy.
+    """
     copied_vars = []
     complements = []
     recovery_rules = {}
@@ -343,17 +405,23 @@ def _make_stage2_copies_and_complements(vars_list, r_values):
                 recovery_rules[x] = orig
         else:
             xs = [orig]
-            bxs = [SR.symbol(f"bar_{name}", latex_name=rf"\overline{{{base_latex}}}")]
+            bxs = [SR.symbol(f"bar_{name}",latex_name=rf"\overline{{{base_latex}}}")]
 
         copied_vars.append(xs)
         complements.append(bxs)
 
     return copied_vars, complements, recovery_rules
 
-def _sum2d(mat):
-    return sum(sum(row) for row in mat)
+
+#### Verification helpers ####
 
 def _verify_reduction(result):
+    r"""
+    Verify the Lemma 3.1 reduction under `x_{j,s} = 2^s y_j`.
+
+    Doubling-chain equations must reduce to `0 = 0`, and rewritten main
+    equations must recover the rows of `A y = b`.
+    """
     A = result.A
     b = result.b
     vars_list = result.original_vars_list
@@ -384,7 +452,15 @@ def _verify_reduction(result):
 
     return True
 
+
 def _verify_embedding(result):
+    r"""
+    Verify the Theorem 3.2 embedding.
+
+    Each non-slack horizontal plane should recover one equation of `A y = b`
+    after substituting complements `\bar y = U - y` and stage-2 copies
+    `y^{[s]} \to y`.
+    """
     M = result.tensor_M
     A = result.A
     b = result.b
@@ -395,7 +471,7 @@ def _verify_embedding(result):
 
     for k in range(A.nrows()):
         expected = sum(A[k, j] * vars_list[j] for j in range(A.ncols())) - b[k, 0]
-        recovered = (_sum2d(M.slice_k(k))
+        recovered = (sum(_tensor_slice_k(M, k).list())
                      .subs(complement_rules)
                      .subs(recovery_rules))
         neg_sum = sum(abs(A[k, j]) for j in range(A.ncols()) if A[k, j] < 0)
@@ -411,7 +487,11 @@ def _verify_embedding(result):
 
     return True
 
+
 def _verify_transportation_face_embedding(result):
+    r"""
+    Verify the composed result: both stages, and `\sigma = \sigma_2 \circ \sigma_1`.
+    """
     reduction = result.reduction
     embedding = result.embedding
 
@@ -433,44 +513,67 @@ def _verify_transportation_face_embedding(result):
 
     return True
 
-def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=None, verify=True):
-    r""" Lemma 3.1 converts ``P = {y >= 0 : A*y = b}`` into
-    ``Q = {x >= 0 : C*x = d}``, where C in {-1, 0, 1, 2}.
 
-    Use this when you only want the preprocessing step. Rational entries are
-    cleared row-by-row, then each coefficient is expanded in binary. The new
-    equations use only small coefficients from ``{-1, 0, 1, 2}``, at the cost
-    of introducing extra chain variables.
+#### Lemma 3.1: coefficient reduction ####
 
-    The result contains ``new_constraints``, ``new_vars_list``,
-    ``new_vars_grouped``, ``k_values``, and ``sigma_1``. Set ``verify=False``
-    to skip the internal symbolic consistency checks.
+def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=None, verify=False):
+    r"""
+    Reduce `A y = b` to a system with `{-1, 0, 1, 2}`-coefficients.
+
+    Lemma 3.1 of [DLO2004]_ converts `P = {y >= 0 : A y = b}` into
+    `Q = {x >= 0 : C x = d}` with `C \in {-1, 0, 1, 2}`. Rational entries
+    are cleared row by row, then each coefficient is expanded in binary. The
+    new equations use only small coefficients, at the cost of introducing chain
+    variables `x_{j,0}, \ldots, x_{j,k_j}` linked by `2 x_{j,s} - x_{j,s+1} = 0`.
+
+    INPUT:
+
+    - ``A`` -- integer or rational matrix
+    - ``b`` -- integer or rational column matrix, vector, or list
+    - ``vars_list`` -- (optional) symbolic variables for `y`
+    - ``original_constraints`` -- (optional) symbolic equations for display
+    - ``verify`` -- (default: ``False``) run :func:`_verify_reduction`
+
+    OUTPUT: a :class:`CoefficientReductionResult`.
+
+    EXAMPLES::
+
+        sage: from sage.geometry.polyhedron.transportation_face_embedding \
+        ....:     import coefficient_reduce_from_matrix
+        sage: A = matrix(QQ, [[3]]); b = vector(QQ, [1])
+        sage: red = coefficient_reduce_from_matrix(A, b)
+        sage: red.k_values
+        [1]
+        sage: len(red.new_vars_list)
+        2
     """
     A, b = _normalize_Ab(A, b)
     nrows, ncols = A.nrows(), A.ncols()
 
-    #introduce variables x_{j,0}, ..., x_{j,k_j}.
     if vars_list is None:
         vars_list = _make_input_variables(ncols)
 
+    # (Lemma 3.1): compute k_j.
     k_values = [_k_j(A, j) for j in range(ncols)]
 
+    # Introduce variables x_{j,0}, ..., x_{j,k_j}.
     new_vars_grouped = _make_stage1_variables(vars_list, k_values)
     new_vars_list = [v for group in new_vars_grouped for v in group]
 
-    #sigma_1(y_j) = x_{j,0}.
+    # sigma_1(y_j) = x_{j,0}.
     sigma_1 = {vars_list[j]: new_vars_grouped[j][0] for j in range(ncols)}
 
+    # Doubling-chain equations 2 x_{j,s} - x_{j,s+1} = 0.
     new_constraints = []
     n_chain = 0
-    # add doubling-chain equations 2*x_{j,s} - x_{j,s+1} = 0.
     for j in range(ncols):
         for s in range(k_values[j]):
             new_constraints.append(
                 2 * new_vars_grouped[j][s] - new_vars_grouped[j][s + 1] == 0
             )
             n_chain += 1
-    #rewrite each row using binary expansion of |a_{i,j}|.
+
+    # Rewrite each row using binary expansion of |a_{i,j}|.
     for i in range(nrows):
         new_lhs = 0
         for j in range(ncols):
@@ -503,28 +606,63 @@ def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=No
         _verify_reduction(result)
     return result
 
-def coefficient_reduce(P, verify=True):
-    r"""Coefficient-reduce a standard-form Sage ``Polyhedron``.
 
-    The polyhedron must represent ``{y >= 0 : A*y = b}``: equality constraints
-    are used as ``A*y = b``, and inequalities must be coordinate
-    non-negativity constraints. For matrix input, use
-    ``coefficient_reduce_from_matrix`` instead.
+def coefficient_reduce(P, verify=False):
+    r"""
+    Coefficient-reduce a standard-form Sage ``Polyhedron``.
+
+    Polyhedron-in entry point for :func:`coefficient_reduce_from_matrix`. The
+    polyhedron must represent `{y >= 0 : A y = b}`.
+
+    EXAMPLES::
+
+        sage: from sage.geometry.polyhedron.transportation_face_embedding \
+        ....:     import coefficient_reduce
+        sage: P = Polyhedron(eqns=[[-1, 3]], ieqs=[[0, 1]])
+        sage: red = coefficient_reduce(P)
+        sage: red.k_values
+        [1]
     """
     A, b = _polyhedron_to_Ab(P)
     return coefficient_reduce_from_matrix(A, b, verify=verify)
 
-def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,  original_constraints=None, verify=True):
-    r"""Build the 3-way transportation tensor and marginals from ``A*y = b``.
 
-    This runs the tensor-construction step directly, without first doing
-    coefficient reduction. Use it when ``A`` already has manageable
-    coefficients, or when you want to inspect only the transportation-face
-    construction.
+#### Theorem 3.2: plane-sum entry-forbidden 3-way transportation embedding ####
 
-    The result contains ``tensor_M``, ``marginals_u``, ``marginals_v``,
-    ``marginals_w``, ``zero_set_S``, ``active_set_V``, and ``sigma_2``. If
-    ``U`` is omitted, a symbolic positive variable ``U`` is created.
+def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,original_constraints=None, verify=False):
+    r"""
+    Build the 3-way transportation array and marginals from `A y = b`.
+
+    Theorem 3.2 of [DLO2004]_ runs the array-construction step directly,
+    without coefficient reduction. Each variable `y_j` and its complement
+    `\bar y_j = U - y_j` are placed in cyclically arranged enabled entries of
+    the box `R_j \times R_j \times H`, and equation `k` is encoded by the
+    horizontal plane-sum `w_k = b_k + U \sum_{j : a_{k,j} < 0} |a_{k,j}|`.
+
+    INPUT:
+
+    - ``A`` -- integer matrix (typically the Lemma 3.1 output)
+    - ``b`` -- integer column matrix, vector, or list
+    - ``vars_list`` -- (optional) symbolic variables for `y`
+    - ``U`` -- (optional) upper bound on `y_j`; a positive symbol by default
+    - ``original_constraints`` -- (optional) symbolic equations for display
+    - ``verify`` -- (default: ``True``) run :func:`_verify_embedding`
+
+    OUTPUT: a :class:`TransportationEmbeddingResult`. The field ``tensor_M`` is
+    a list of ``h`` sparse matrices over ``SR``, one per horizontal plane.
+
+    EXAMPLES::
+
+        sage: from sage.geometry.polyhedron.transportation_face_embedding \
+        ....:     import polytope_3waytransportation_from_matrix
+        sage: A = matrix(QQ, [[1, 1, 0], [1, 0, 1]]); b = vector(QQ, [3, 2])
+        sage: emb = polytope_3waytransportation_from_matrix(A, b)
+        sage: len(emb.tensor_M)
+        3
+        sage: emb.tensor_M[0].nrows(), emb.tensor_M[0].ncols()
+        (4, 4)
+        sage: emb.r_values
+        [2, 1, 1]
     """
     A, b = _normalize_Ab(A, b)
     nrows, ncols = A.nrows(), A.ncols()
@@ -535,8 +673,10 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,  origi
         U = SR.symbol("U")
         assume(U > 0)
 
-    r_values = [_r_j(A, j) for j in range(ncols)] #(Theorem 3.2): compute r_j.
+    # Step 1: r_j.
+    r_values = [_r_j(A, j) for j in range(ncols)]
 
+    # Step 2: nondegenerate-box guard.
     zero_cols = [j for j, rj in enumerate(r_values) if rj == 0]
     if zero_cols:
         offenders = ", ".join(str(vars_list[j]) for j in zero_cols)
@@ -546,12 +686,13 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,  origi
             f"every variable must appear in at least one equation"
         )
 
-    R_partition = _partition_R(r_values) #partition R = disjoint union R_j, with |R_j| = r_j.
-    r = sum(r_values) 
+    # Partition R = disjoint union R_j with |R_j| = r_j.
+    R_partition = _partition_R(r_values)
+    r = sum(r_values)
     h = nrows + 1
     slack_level = nrows
 
-    # Introduce copies and complements for each variable box.
+    # Copies and complements per variable box.
     copied_vars, complements, recovery_rules = (
         _make_stage2_copies_and_complements(vars_list, r_values)
     )
@@ -561,26 +702,35 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,  origi
         for x, bx in zip(xs, bxs)
     }
 
+    # k^+ and k^- level sequences, padded by the slack plane.
     k_plus = []
     k_minus = []
     for j in range(ncols):
-        k_plus.append( _pad_to_length(_levels_for_positive_copies(A, j), r_values[j], slack_level) )
-        k_minus.append(_pad_to_length(_levels_for_negative_copies(A, j),r_values[j], slack_level))
+        k_plus.append(
+            _pad_to_length(_levels_for_positive_copies(A, j),
+                           r_values[j], slack_level)
+        )
+        k_minus.append(
+            _pad_to_length(_levels_for_negative_copies(A, j),
+                           r_values[j], slack_level)
+        )
 
-    M = Tensor3D((r, r, h)) # place variable copies and complement copies in tensor M.
+    # Place variable and complement copies in the array M.
+    M = _new_tensor_3d((r, r, h))
     active_set_V = set()
     for j in range(ncols):
         R_j = R_partition[j]
         for s in range(r_values[j]):
             i_curr = R_j[s]
             i_next = R_j[(s + 1) % r_values[j]]
-            pos_coord = (i_curr, i_curr, k_plus[j][s])
-            neg_coord = (i_curr, i_next, k_minus[j][s])
-            M[pos_coord] = copied_vars[j][s]
-            M[neg_coord] = complements[j][s]
-            active_set_V.add(pos_coord)
-            active_set_V.add(neg_coord)
+            kp = k_plus[j][s]
+            km = k_minus[j][s]
+            M[kp][i_curr, i_curr] = copied_vars[j][s]
+            M[km][i_curr, i_next] = complements[j][s]
+            active_set_V.add((i_curr, i_curr, kp))
+            active_set_V.add((i_curr, i_next, km))
 
+    # Plane marginals w and vertical marginals u, v.
     marginals_w = [
         b[k, 0] + U * sum(abs(A[k, j])
                           for j in range(ncols) if A[k, j] < 0)
@@ -590,8 +740,10 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,  origi
     marginals_u = [U] * r
     marginals_v = [U] * r
 
+    # Forbidden set S as the complement of V.
     zero_set_S = set(product(range(r), range(r), range(h))) - active_set_V
-    # Let sigma_2(y_j) be the first positive copy coordinate.
+
+    # sigma_2(y_j) is the first positive-copy coordinate.
     sigma_2 = {
         vars_list[j]: (R_partition[j][0], R_partition[j][0], k_plus[j][0])
         for j in range(ncols)
@@ -626,37 +778,64 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,  origi
         _verify_embedding(result)
     return result
 
-def polytope_3waytransportation(P, U=None, verify=True):
-    r"""Build a transportation-face embedding from a Sage ``Polyhedron``.
 
-    This is the Polyhedron-input version of
-    ``polytope_3waytransportation_from_matrix``. It skips the binary
-    coefficient-reduction preprocessing, so use ``transportation_face_embedding``
-    when you want the full matrix-normalization and tensor-construction workflow.
+#### Polytope 3-way transportation embedding ####
+
+def polytope_3waytransportation(P, U=None, verify=False):
+    r"""
+    Build a transportation-face embedding from a Sage ``Polyhedron``.
+
+    Polyhedron-in entry point for
+    :func:`polytope_3waytransportation_from_matrix`. This skips the binary
+    coefficient-reduction preprocessing; use
+    :func:`transportation_face_embedding` for the full pipeline.
+
+    EXAMPLES::
+
+        sage: from sage.geometry.polyhedron.transportation_face_embedding \
+        ....:     import polytope_3waytransportation
+        sage: P = Polyhedron(eqns=[[-3, 1, 1, 0], [-2, 1, 0, 1]],
+        ....:                ieqs=[[0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        sage: emb = polytope_3waytransportation(P)
+        sage: len(emb.tensor_M)
+        3
     """
     A, b = _polyhedron_to_Ab(P)
     return polytope_3waytransportation_from_matrix(A, b, U=U, verify=verify)
 
-def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None,  original_constraints=None, verify=True):
-    r"""Build the complete transportation-face embedding from matrix input.
 
-    This is the recommended entry point when your input is ``A, b``. It first
-    rewrites the equation system with small coefficients, then constructs a
-    3-way symbolic tensor whose plane marginals encode the reduced system.
-    The forbidden entries are listed in ``zero_set_S``; enabled entries are
-    listed in ``active_set_V``.
+#### Theorem 1: coefficient-reduce, embed, then compose ####
 
-    Example::
+def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None, original_constraints=None, verify=True):
+    r"""
+    Build the complete transportation-face embedding from matrix input.
 
-        A = matrix(QQ, [[1, 1, 0], [1, 0, 1]])
-        b = vector(QQ, [3, 2])
-        out = transportation_face_embedding_from_matrix(A, b)
-        out.sigma          # original variables -> tensor coordinates
-        out.tensor_M       # symbolic 3D tensor
-        out.marginals_w    # third-index plane marginals
+    Recommended entry point for matrix input. Composes Lemma 3.1 and
+    Theorem 3.2 of [DLO2004]_: first rewrite `A y = b` with small coefficients,
+    then construct a 3-way array whose plane marginals encode the reduced
+    system, with `\sigma = \sigma_2 \circ \sigma_1`.
 
-    Set ``verify=False`` for faster runs after the code has already been tested
-    on your examples.
+    INPUT:
+
+    - ``A`` -- integer or rational matrix
+    - ``b`` -- integer or rational column matrix, vector, or list
+    - ``vars_list`` -- (optional) symbolic variables for `y`
+    - ``U`` -- (optional) upper bound on `y_j`; a positive symbol by default
+    - ``original_constraints`` -- (optional) symbolic equations for display
+    - ``verify`` -- (default: ``True``) run all stage verifications
+
+    OUTPUT: a :class:`TransportationFaceEmbeddingResult`.
+
+    EXAMPLES::
+
+        sage: from sage.geometry.polyhedron.transportation_face_embedding \
+        ....:     import transportation_face_embedding_from_matrix
+        sage: A = matrix(QQ, [[1, 1, 0], [1, 0, 1]]); b = vector(QQ, [3, 2])
+        sage: out = transportation_face_embedding_from_matrix(A, b)
+        sage: len(out.tensor_M)
+        3
+        sage: sorted(str(y) for y in out.sigma)
+        ['y1', 'y2', 'y3']
     """
     A, b = _normalize_Ab(A, b)
 
@@ -698,19 +877,39 @@ def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None,  ori
         _verify_transportation_face_embedding(result)
     return result
 
+
 def transportation_face_embedding(P, U=None, verify=True):
-    r"""Build the complete transportation-face embedding from a Sage ``Polyhedron``.
+    r"""
+    Build the complete transportation-face embedding from a Sage ``Polyhedron``.
 
-    This is the recommended entry point for Polyhedron input. The polyhedron
-    must be bounded, rational, and in standard form ``{y >= 0 : A*y = b}``.
+    Recommended entry point for Polyhedron input (Theorem 1 of [DLO2004]_). The
+    polyhedron must be bounded, rational, and in standard form
+    `{y >= 0 : A y = b}`.
 
-    For direct matrix input, use ``transportation_face_embedding_from_matrix``.
+    EXAMPLES::
+
+        sage: from sage.geometry.polyhedron.transportation_face_embedding \
+        ....:     import transportation_face_embedding
+        sage: P = Polyhedron(eqns=[[-3, 1, 1, 0], [-2, 1, 0, 1]],
+        ....:                ieqs=[[0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        sage: out = transportation_face_embedding(P)
+        sage: len(out.tensor_M)
+        3
+        sage: out.tensor_M[0].nrows()
+        4
     """
     A, b = _polyhedron_to_Ab(P)
     return transportation_face_embedding_from_matrix(A, b, U=U, verify=verify)
 
+
+#### Internal: re-extract (A, b) from the reduced symbolic constraints ####
+
 def _reduced_constraints_to_matrix(reduction):
-    r"""Convert reduced symbolic equations back into a Sage matrix system."""
+    r"""
+    Build `(C, d)` for the system in ``reduction.new_constraints``, using
+    ``reduction.new_vars_list`` as the column order. The reduced system has
+    integer coefficients in `{-1, 0, 1, 2}`.
+    """
     new_constraints = reduction.new_constraints
     new_vars_list = reduction.new_vars_list
     n = len(new_vars_list)
