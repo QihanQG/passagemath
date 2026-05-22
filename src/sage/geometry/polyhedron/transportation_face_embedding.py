@@ -1,28 +1,22 @@
 r"""Transportation-face embedding utilities for standard-form rational polytopes.
 
-This module embeds a rational polytope ``P = {y >= 0 : A*y = b}`` into a face of
-a 3-way transportation polytope (De Loera--Onn 2004, 2006). The symbolic output
-facilitates inspection of the constructed array, its plane marginals, and the
-coordinates of the original variables.
-
-The 3-way array is stored as a list of ``h`` sparse Sage matrices over the
-Symbolic Ring (``SR``), representing each horizontal plane ``k = 0, ..., h - 1``.
+Embeds a rational polytope ``P = {y >= 0 : A*y = b}`` into a face of a 3-waytransportation polytope [DLO2004]_.
+Generates symbolic data to inspect the constructed tensor, plane marginals,
+and variable coordinates. Stores the 3-way array as a list of ``h`` sparse
+matrices over the Symbolic Ring (``SR``), representing each horizontal plane.
 
 **Main Entry Points:**
+- :func:`transportation_face_embedding_from_matrix` for raw ``A`` and ``b``.
+- :func:`transportation_face_embedding` for a standard-form ``Polyhedron``.
 
-- :func:`transportation_face_embedding_from_matrix` for raw ``A`` and ``b`` inputs.
-- :func:`transportation_face_embedding` for a standard-form Sage ``Polyhedron``.
-
-Result objects provide top-level access to the final array, forced/enabled entries,
-marginals, and the coordinate map. Intermediate reduction and construction data are
-stored under ``out.reduction`` and ``out.embedding`` (or via ``out.as_dict()``).
+Result objects expose the final tensor, active entries, marginals, and
+coordinate maps. Intermediate states are preserved under ``.reduction``
+and ``.embedding``.
 
 REFERENCES:
-
 - [DLO2004]_ De Loera, J. A.; Onn, S. "All Rational Polytopes Are
   Transportation Polytopes and All Polytopal Integer Sets Are Contingency
   Tables." IPCO 2004.
-
 - [DLO2006]_ De Loera, J. A.; Onn, S. "All Linear and Integer Programs are
   Slim 3-Way Transportation Programs." SIAM J. Optim. 17 (2006), 806--821.
 
@@ -76,26 +70,7 @@ def _new_tensor_3d(shape):
     return [matrix(SR, r, c, sparse=True) for _ in range(h)]
 
 
-def _tensor_slice_k(M, k):
-    r"""Return the horizontal ``k``-plane as an ``r x c`` Sage matrix."""
-    return M[k]
-
-
-def _tensor_slice_i(M, i):
-    r"""Return the slice with first index fixed to ``i`` as a ``c x h`` matrix."""
-    h = len(M)
-    c = M[0].ncols()
-    return matrix(SR, [[M[k][i, j] for k in range(h)] for j in range(c)])
-
-
-def _tensor_slice_j(M, j):
-    r"""Return the slice with second index fixed to ``j`` as an ``r x h`` matrix."""
-    h = len(M)
-    r = M[0].nrows()
-    return matrix(SR, [[M[k][i, j] for k in range(h)] for i in range(r)])
-
-
-# Result objects.
+### Result objects ###
 
 class _TransportationConstructionResult(SageObject):
     """Small Sage-style result object with attribute access."""
@@ -125,7 +100,6 @@ class _TransportationConstructionResult(SageObject):
     def _repr_(self):
         return f"{self.__class__.__name__} with fields {self._fields}"
 
-
 class CoefficientReductionResult(_TransportationConstructionResult):
     _fields = (
         "new_constraints",
@@ -139,6 +113,37 @@ class CoefficientReductionResult(_TransportationConstructionResult):
         "b",
         "n_chain",
     )
+
+    def verify(self):
+        r"""
+        Check the Lemma 3.1 reduction invariants.
+
+        Under `x_{j,s} = 2^s y_j` the doubling-chain equations must reduce to
+        `0 = 0` and the rewritten main equations must recover the rows of
+        `A y = b`. Return ``True`` or raise ``AssertionError``.
+        """
+        A, b, vars_list = self.A, self.b, self.original_vars_list
+        sub_back = {
+            self.new_vars_grouped[j][s]: 2 ** s * vars_list[j]
+            for j in range(A.ncols())
+            for s in range(self.k_values[j] + 1)
+        }
+
+        for c in range(self.n_chain):
+            eq = self.new_constraints[c]
+            diff = (eq.lhs() - eq.rhs()).subs(sub_back).expand()
+            assert diff.is_trivial_zero(), f"Doubling chain check failed: {eq}"
+
+        for i in range(A.nrows()):
+            eq = self.new_constraints[self.n_chain + i]
+            recovered = eq.lhs().subs(sub_back).expand()
+            expected = sum(int(A[i, j]) * vars_list[j] for j in range(A.ncols()))
+            assert (recovered - expected).expand().is_trivial_zero(), (
+                f"Main equation row {i} failed: {recovered} != {expected}"
+            )
+            assert eq.rhs() == b[i, 0], f"Main equation rhs mismatch at row {i}"
+
+        return True
 
 
 class TransportationEmbeddingResult(_TransportationConstructionResult):
@@ -162,10 +167,37 @@ class TransportationEmbeddingResult(_TransportationConstructionResult):
         "copied_vars",
         "complements",
         "complement_rules",
-        "recovery_rules",
+        "copy_identification_rules",
         "U",
     )
 
+    def verify(self):
+        r"""
+        Check the Theorem 3.2 embedding invariants.
+
+        Each non-slack horizontal plane must recover one equation of `A y = b`
+        (after substituting `\bar y = U - y` and the stage-2 copies), and every
+        `\sigma_2` image must land in the enabled set `V`. Return ``True`` or
+        raise ``AssertionError``.
+        """
+        A, b, vars_list = self.A, self.b, self.vars_list
+
+        for k in range(A.nrows()):
+            expected = sum(A[k, j] * vars_list[j]
+                           for j in range(A.ncols())) - b[k, 0]
+            recovered = (sum(self.tensor_M[k].list())
+                         .subs(self.complement_rules)
+                         .subs(self.copy_identification_rules))
+            neg_sum = sum(abs(A[k, j]) for j in range(A.ncols()) if A[k, j] < 0)
+            actual = (recovered - self.U * neg_sum - b[k, 0]).expand()
+            assert (actual - expected).expand().is_trivial_zero(), (
+                f"Plane {k} mismatch"
+            )
+
+        for y, coord in self.sigma_2.items():
+            assert coord in self.active_set_V, f"sigma_2[{y}] does not land in V"
+
+        return True
 
 class TransportationFaceEmbeddingResult(_TransportationConstructionResult):
     _fields = (
@@ -180,6 +212,22 @@ class TransportationFaceEmbeddingResult(_TransportationConstructionResult):
         "embedding",
     )
 
+    def verify(self):
+        r"""
+        Check the full Theorem 1 result.
+
+        Runs both stage verifications and checks the composition
+        `\sigma = \sigma_2 \circ \sigma_1`. Return ``True`` or raise
+        ``AssertionError``.
+        """
+        self.reduction.verify()
+        self.embedding.verify()
+
+        for y in self.reduction.original_vars_list:
+            expected = self.embedding.sigma_2[self.reduction.sigma_1[y]]
+            assert self.sigma[y] == expected, f"sigma composition failed for {y}"
+
+        return True
 
 #### Normalizing input ####
 
@@ -192,7 +240,6 @@ def _b_to_column(b) -> list:
             return [b[0, j] for j in range(b.ncols())]
         raise ValueError("b must be a vector, list, row matrix, or column matrix")
     return list(b)
-
 
 def _normalize_Ab(A, b):
     r"""
@@ -224,7 +271,6 @@ def _normalize_Ab(A, b):
         b_int.append(ZZ(bi))
 
     return matrix(ZZ, A_rows_int), matrix(ZZ, len(b_int), 1, b_int)
-
 
 def _polyhedron_to_Ab(P):
     r"""
@@ -266,7 +312,6 @@ def _polyhedron_to_Ab(P):
         row = [ZZ(0)] * ambient_dim
         row[j] = ZZ(1)
         nonneg_ieqs.append([ZZ(0)] + row)
-
     
     P_standard = Polyhedron(eqns=eqns, ieqs=nonneg_ieqs, base_ring=QQ,)
 
@@ -290,7 +335,6 @@ def _make_input_variables(n: int, prefix: str = "y") -> list:
         for j in range(n)
     ]
 
-
 #### Helpers ####
 
 def _k_j(A, j: int) -> int:
@@ -311,7 +355,6 @@ def _binary_digits(n: int, padto: int) -> list:
     `x_{j,0}, \ldots, x_{j,k_j}`.
     """
     return ZZ(abs(n)).digits(2, padto=padto)
-
 
 def _r_j(A, j):
     r"""
@@ -351,7 +394,6 @@ def _levels_for_negative_copies(A, j):
             levels.extend([k] * int(-A[k, j]))
     return levels
 
-
 def _pad_to_length(seq: list, target_len: int, fill_value: int) -> list:
     r"""Return ``seq`` padded to ``target_len`` with ``fill_value``."""
     return list(seq) + [fill_value] * (target_len - len(seq))
@@ -377,7 +419,6 @@ def _make_stage1_variables(vars_list, k_values):
         new_vars_grouped.append(group)
     return new_vars_grouped
 
-
 def _make_stage2_copies_and_complements(vars_list, r_values):
     r"""
     Create variable copies and complements for the Theorem 3.2 boxes.
@@ -387,7 +428,7 @@ def _make_stage2_copies_and_complements(vars_list, r_values):
     """
     copied_vars = []
     complements = []
-    recovery_rules = {}
+    copy_identification_rules = {}
 
     for j, count in enumerate(r_values):
         orig = vars_list[j]
@@ -402,7 +443,7 @@ def _make_stage2_copies_and_complements(vars_list, r_values):
                              latex_name=rf"\overline{{{base_latex}}}^{{[{s}]}}")
                    for s in range(1, count + 1)]
             for x in xs:
-                recovery_rules[x] = orig
+                copy_identification_rules[x] = orig
         else:
             xs = [orig]
             bxs = [SR.symbol(f"bar_{name}",latex_name=rf"\overline{{{base_latex}}}")]
@@ -410,113 +451,11 @@ def _make_stage2_copies_and_complements(vars_list, r_values):
         copied_vars.append(xs)
         complements.append(bxs)
 
-    return copied_vars, complements, recovery_rules
-
-
-#### Verification helpers ####
-
-def _verify_reduction(result):
-    r"""
-    Verify the Lemma 3.1 reduction under `x_{j,s} = 2^s y_j`.
-
-    Doubling-chain equations must reduce to `0 = 0`, and rewritten main
-    equations must recover the rows of `A y = b`.
-    """
-    A = result.A
-    b = result.b
-    vars_list = result.original_vars_list
-    k_values = result.k_values
-    new_vars_grouped = result.new_vars_grouped
-    new_constraints = result.new_constraints
-    n_chain = result.n_chain
-
-    sub_back = {
-        new_vars_grouped[j][s]: 2 ** s * vars_list[j]
-        for j in range(A.ncols())
-        for s in range(k_values[j] + 1)
-    }
-
-    for c in range(n_chain):
-        eq = new_constraints[c]
-        diff = (eq.lhs() - eq.rhs()).subs(sub_back).expand()
-        assert diff.is_trivial_zero(), f"Doubling chain check failed: {eq}"
-
-    for i in range(A.nrows()):
-        eq = new_constraints[n_chain + i]
-        recovered = eq.lhs().subs(sub_back).expand()
-        expected = sum(int(A[i, j]) * vars_list[j] for j in range(A.ncols()))
-        assert (recovered - expected).expand().is_trivial_zero(), (
-            f"Main equation row {i} failed: {recovered} != {expected}"
-        )
-        assert eq.rhs() == b[i, 0], f"Main equation rhs mismatch at row {i}"
-
-    return True
-
-
-def _verify_embedding(result):
-    r"""
-    Verify the Theorem 3.2 embedding.
-
-    Each non-slack horizontal plane should recover one equation of `A y = b`
-    after substituting complements `\bar y = U - y` and stage-2 copies
-    `y^{[s]} \to y`.
-    """
-    M = result.tensor_M
-    A = result.A
-    b = result.b
-    vars_list = result.vars_list
-    U = result.U
-    complement_rules = result.complement_rules
-    recovery_rules = result.recovery_rules
-
-    for k in range(A.nrows()):
-        expected = sum(A[k, j] * vars_list[j] for j in range(A.ncols())) - b[k, 0]
-        recovered = (sum(_tensor_slice_k(M, k).list())
-                     .subs(complement_rules)
-                     .subs(recovery_rules))
-        neg_sum = sum(abs(A[k, j]) for j in range(A.ncols()) if A[k, j] < 0)
-        actual = (recovered - U * neg_sum - b[k, 0]).expand()
-        assert (actual - expected).expand().is_trivial_zero(), (
-            f"Plane {k} mismatch"
-        )
-
-    for y, coord in result.sigma_2.items():
-        assert coord in result.active_set_V, (
-            f"sigma_2[{y}] does not land in V"
-        )
-
-    return True
-
-
-def _verify_transportation_face_embedding(result):
-    r"""
-    Verify the composed result: both stages, and `\sigma = \sigma_2 \circ \sigma_1`.
-    """
-    reduction = result.reduction
-    embedding = result.embedding
-
-    _verify_reduction(reduction)
-    _verify_embedding(embedding)
-
-    for key in ("tensor_M", "zero_set_S", "active_set_V",
-                "marginals_u", "marginals_v", "marginals_w"):
-        assert getattr(result, key) == getattr(embedding, key), (
-            f"Transportation-face embedding wrapper mismatch at {key}"
-        )
-
-    for y in reduction.original_vars_list:
-        x_j0 = reduction.sigma_1[y]
-        expected_coord = embedding.sigma_2[x_j0]
-        assert result.sigma[y] == expected_coord, (
-            f"sigma composition failed for {y}"
-        )
-
-    return True
-
+    return copied_vars, complements, copy_identification_rules
 
 #### Lemma 3.1: coefficient reduction ####
 
-def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=None, verify=False):
+def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=None):
     r"""
     Reduce `A y = b` to a system with `{-1, 0, 1, 2}`-coefficients.
 
@@ -532,9 +471,9 @@ def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=No
     - ``b`` -- integer or rational column matrix, vector, or list
     - ``vars_list`` -- (optional) symbolic variables for `y`
     - ``original_constraints`` -- (optional) symbolic equations for display
-    - ``verify`` -- (default: ``False``) run :func:`_verify_reduction`
 
-    OUTPUT: a :class:`CoefficientReductionResult`.
+    OUTPUT: a :class:`CoefficientReductionResult`. Call its ``verify()`` method
+    to check the reduction invariants.
 
     EXAMPLES::
 
@@ -546,6 +485,8 @@ def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=No
         [1]
         sage: len(red.new_vars_list)
         2
+        sage: red.verify()
+        True
     """
     A, b = _normalize_Ab(A, b)
     nrows, ncols = A.nrows(), A.ncols()
@@ -602,12 +543,10 @@ def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=No
         n_chain=n_chain,
     )
 
-    if verify:
-        _verify_reduction(result)
     return result
 
 
-def coefficient_reduce(P, verify=False):
+def coefficient_reduce(P):
     r"""
     Coefficient-reduce a standard-form Sage ``Polyhedron``.
 
@@ -622,14 +561,15 @@ def coefficient_reduce(P, verify=False):
         sage: red = coefficient_reduce(P)
         sage: red.k_values
         [1]
+        sage: red.verify()
+        True
     """
     A, b = _polyhedron_to_Ab(P)
-    return coefficient_reduce_from_matrix(A, b, verify=verify)
-
+    return coefficient_reduce_from_matrix(A, b)
 
 #### Theorem 3.2: plane-sum entry-forbidden 3-way transportation embedding ####
 
-def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,original_constraints=None, verify=False):
+def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,original_constraints=None):
     r"""
     Build the 3-way transportation array and marginals from `A y = b`.
 
@@ -646,10 +586,10 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
     - ``vars_list`` -- (optional) symbolic variables for `y`
     - ``U`` -- (optional) upper bound on `y_j`; a positive symbol by default
     - ``original_constraints`` -- (optional) symbolic equations for display
-    - ``verify`` -- (default: ``True``) run :func:`_verify_embedding`
 
     OUTPUT: a :class:`TransportationEmbeddingResult`. The field ``tensor_M`` is
-    a list of ``h`` sparse matrices over ``SR``, one per horizontal plane.
+    a list of ``h`` sparse matrices over ``SR``, one per horizontal plane. Call
+    its ``verify()`` method to check the embedding invariants.
 
     EXAMPLES::
 
@@ -663,6 +603,8 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
         (4, 4)
         sage: emb.r_values
         [2, 1, 1]
+        sage: emb.verify()
+        True
     """
     A, b = _normalize_Ab(A, b)
     nrows, ncols = A.nrows(), A.ncols()
@@ -673,10 +615,10 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
         U = SR.symbol("U")
         assume(U > 0)
 
-    # Step 1: r_j.
+    # r_j.
     r_values = [_r_j(A, j) for j in range(ncols)]
 
-    # Step 2: nondegenerate-box guard.
+    #  nondegenerate-box guard.
     zero_cols = [j for j, rj in enumerate(r_values) if rj == 0]
     if zero_cols:
         offenders = ", ".join(str(vars_list[j]) for j in zero_cols)
@@ -693,7 +635,7 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
     slack_level = nrows
 
     # Copies and complements per variable box.
-    copied_vars, complements, recovery_rules = (
+    copied_vars, complements, copy_identification_rules = (
         _make_stage2_copies_and_complements(vars_list, r_values)
     )
     complement_rules = {
@@ -770,18 +712,15 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
         copied_vars=copied_vars,
         complements=complements,
         complement_rules=complement_rules,
-        recovery_rules=recovery_rules,
+        copy_identification_rules=copy_identification_rules,
         U=U,
     )
 
-    if verify:
-        _verify_embedding(result)
     return result
-
 
 #### Polytope 3-way transportation embedding ####
 
-def polytope_3waytransportation(P, U=None, verify=False):
+def polytope_3waytransportation(P, U=None):
     r"""
     Build a transportation-face embedding from a Sage ``Polyhedron``.
 
@@ -799,21 +738,20 @@ def polytope_3waytransportation(P, U=None, verify=False):
         sage: emb = polytope_3waytransportation(P)
         sage: len(emb.tensor_M)
         3
+        sage: emb.verify()
+        True
     """
     A, b = _polyhedron_to_Ab(P)
-    return polytope_3waytransportation_from_matrix(A, b, U=U, verify=verify)
-
+    return polytope_3waytransportation_from_matrix(A, b, U=U)
 
 #### Theorem 1: coefficient-reduce, embed, then compose ####
 
-def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None, original_constraints=None, verify=True):
+def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None, original_constraints=None):
     r"""
-    Build the complete transportation-face embedding from matrix input.
-
-    Recommended entry point for matrix input. Composes Lemma 3.1 and
-    Theorem 3.2 of [DLO2004]_: first rewrite `A y = b` with small coefficients,
-    then construct a 3-way array whose plane marginals encode the reduced
-    system, with `\sigma = \sigma_2 \circ \sigma_1`.
+    Embed the standard-form system A y = b into a face of a 3-way transportation polytope.
+    Composes coefficient reduction (Lemma 3.1) and tensor construction (Theorem 3.2)
+    from [DLO2004]_. The tensor's plane marginals encode the reduced system via the
+    composite coordinate map sigma = sigma_2 ∘ sigma_1.
 
     INPUT:
 
@@ -822,9 +760,10 @@ def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None, orig
     - ``vars_list`` -- (optional) symbolic variables for `y`
     - ``U`` -- (optional) upper bound on `y_j`; a positive symbol by default
     - ``original_constraints`` -- (optional) symbolic equations for display
-    - ``verify`` -- (default: ``True``) run all stage verifications
 
-    OUTPUT: a :class:`TransportationFaceEmbeddingResult`.
+    OUTPUT: a :class:`TransportationFaceEmbeddingResult`. Call its ``verify()``
+    method to check both stage invariants and the composition
+    `\sigma = \sigma_2 \circ \sigma_1`.
 
     EXAMPLES::
 
@@ -836,6 +775,8 @@ def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None, orig
         3
         sage: sorted(str(y) for y in out.sigma)
         ['y1', 'y2', 'y3']
+        sage: out.verify()
+        True
     """
     A, b = _normalize_Ab(A, b)
 
@@ -846,14 +787,12 @@ def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None, orig
         A, b,
         vars_list=vars_list,
         original_constraints=original_constraints,
-        verify=False,
     )
 
     embedding = polytope_3waytransportation_from_matrix(
         *_reduced_constraints_to_matrix(reduction),
         vars_list=reduction.new_vars_list,
         U=U,
-        verify=False,
     )
 
     sigma = {
@@ -873,12 +812,10 @@ def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None, orig
         embedding=embedding,
     )
 
-    if verify:
-        _verify_transportation_face_embedding(result)
     return result
 
 
-def transportation_face_embedding(P, U=None, verify=True):
+def transportation_face_embedding(P, U=None):
     r"""
     Build the complete transportation-face embedding from a Sage ``Polyhedron``.
 
@@ -897,10 +834,11 @@ def transportation_face_embedding(P, U=None, verify=True):
         3
         sage: out.tensor_M[0].nrows()
         4
+        sage: out.verify()
+        True
     """
     A, b = _polyhedron_to_Ab(P)
-    return transportation_face_embedding_from_matrix(A, b, U=U, verify=verify)
-
+    return transportation_face_embedding_from_matrix(A, b, U=U)
 
 #### Internal: re-extract (A, b) from the reduced symbolic constraints ####
 
