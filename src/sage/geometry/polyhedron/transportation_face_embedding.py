@@ -1,6 +1,6 @@
 r"""Transportation-face embedding utilities for standard-form rational polytopes.
 
-Embeds a rational polytope ``P = {y >= 0 : A*y = b}`` into a face of a 3-waytransportation polytope [DLO2004]_.
+Embeds a rational polytope ``P = {y >= 0 : A*y = b}`` into a face of a 3-way transportation polytope [DLO2004]_.
 Generates symbolic data to inspect the constructed tensor, plane marginals,
 and variable coordinates. Stores the 3-way array as a list of ``h`` sparse
 matrices over the Symbolic Ring (``SR``), representing each horizontal plane.
@@ -100,6 +100,7 @@ class _TransportationConstructionResult(SageObject):
     def _repr_(self):
         return f"{self.__class__.__name__} with fields {self._fields}"
 
+
 class CoefficientReductionResult(_TransportationConstructionResult):
     _fields = (
         "new_constraints",
@@ -118,9 +119,9 @@ class CoefficientReductionResult(_TransportationConstructionResult):
         r"""
         Check the Lemma 3.1 reduction invariants.
 
-        Under `x_{j,s} = 2^s y_j` the doubling-chain equations must reduce to
-        `0 = 0` and the rewritten main equations must recover the rows of
-        `A y = b`. Return ``True`` or raise ``AssertionError``.
+        Under `x[j,s] = 2^s * y[j]` the doubling-chain equations must reduce to
+        `0 == 0` and the rewritten main equations must recover the rows of
+        `A*y = b`. Return ``True`` or raise ``AssertionError``.
         """
         A, b, vars_list = self.A, self.b, self.original_vars_list
         sub_back = {
@@ -175,9 +176,9 @@ class TransportationEmbeddingResult(_TransportationConstructionResult):
         r"""
         Check the Theorem 3.2 embedding invariants.
 
-        Each non-slack horizontal plane must recover one equation of `A y = b`
-        (after substituting `\bar y = U - y` and the stage-2 copies), and every
-        `\sigma_2` image must land in the enabled set `V`. Return ``True`` or
+        Each non-slack horizontal plane must recover one equation of `A*y = b`
+        (after substituting `bar_y = U - y` and the stage-2 copies), and every
+        `sigma_2` image must land in the enabled set `V`. Return ``True`` or
         raise ``AssertionError``.
         """
         A, b, vars_list = self.A, self.b, self.vars_list
@@ -199,6 +200,7 @@ class TransportationEmbeddingResult(_TransportationConstructionResult):
 
         return True
 
+
 class TransportationFaceEmbeddingResult(_TransportationConstructionResult):
     _fields = (
         "tensor_M",
@@ -217,7 +219,7 @@ class TransportationFaceEmbeddingResult(_TransportationConstructionResult):
         Check the full Theorem 1 result.
 
         Runs both stage verifications and checks the composition
-        `\sigma = \sigma_2 \circ \sigma_1`. Return ``True`` or raise
+        `sigma = sigma_2 after sigma_1`. Return ``True`` or raise
         ``AssertionError``.
         """
         self.reduction.verify()
@@ -228,6 +230,7 @@ class TransportationFaceEmbeddingResult(_TransportationConstructionResult):
             assert self.sigma[y] == expected, f"sigma composition failed for {y}"
 
         return True
+
 
 #### Normalizing input ####
 
@@ -240,6 +243,7 @@ def _b_to_column(b) -> list:
             return [b[0, j] for j in range(b.ncols())]
         raise ValueError("b must be a vector, list, row matrix, or column matrix")
     return list(b)
+
 
 def _normalize_Ab(A, b):
     r"""
@@ -269,12 +273,13 @@ def _normalize_Ab(A, b):
             bi = bi * L
         A_rows_int.append([ZZ(e) for e in row])
         b_int.append(ZZ(bi))
-
+        
     return matrix(ZZ, A_rows_int), matrix(ZZ, len(b_int), 1, b_int)
+
 
 def _polyhedron_to_Ab(P):
     r"""
-    Extract `(A, b)` from a Polyhedron in standard form `{y >= 0 : A y = b}`.
+    Extract `(A, b)` from a Polyhedron in standard form `{y >= 0 : A*y = b}`.
 
     This checks standard-form semantically rather than syntactically. Sage may
     rewrite coordinate nonnegativity inequalities using the equality system, so
@@ -312,6 +317,7 @@ def _polyhedron_to_Ab(P):
         row = [ZZ(0)] * ambient_dim
         row[j] = ZZ(1)
         nonneg_ieqs.append([ZZ(0)] + row)
+
     
     P_standard = Polyhedron(eqns=eqns, ieqs=nonneg_ieqs, base_ring=QQ,)
 
@@ -335,11 +341,12 @@ def _make_input_variables(n: int, prefix: str = "y") -> list:
         for j in range(n)
     ]
 
+
 #### Helpers ####
 
 def _k_j(A, j: int) -> int:
     r"""
-    Return `k_j = \lfloor \log_2 \max_i |a_{i,j}| \rfloor`.
+    Return `k[j] = floor(log2(max_i(abs(A[i,j]))))`.
 
     If column ``j`` is zero, return ``0`` so the variable still gets one copy.
     """
@@ -351,15 +358,16 @@ def _binary_digits(n: int, padto: int) -> list:
     r"""
     Return base-2 digits of ``n`` padded to length ``padto`` (little-endian).
 
-    Sage returns digits with `n = \sum_s d_s \cdot 2^s`, matching the chain
-    `x_{j,0}, \ldots, x_{j,k_j}`.
+    Sage returns digits with `n = sum_s d_s * 2^s`, matching the chain
+    `x[j,0], ..., x[j,k[j]]`.
     """
     return ZZ(abs(n)).digits(2, padto=padto)
 
+
 def _r_j(A, j):
     r"""
-    Return `r_j = \max(\sum_{k:\, a_{k,j} > 0} a_{k,j},\;
-    \sum_{k:\, a_{k,j} < 0} |a_{k,j}|)`.
+    Return `r[j] = max(sum(A[k,j] for A[k,j] > 0),
+    sum(abs(A[k,j]) for A[k,j] < 0))`.
     """
     col = list(A.column(j))
     positive_sum = sum(a for a in col if a > 0)
@@ -368,7 +376,7 @@ def _r_j(A, j):
 
 
 def _partition_R(r_values):
-    r"""Return the natural partition `R = \bigsqcup_j R_j` with `|R_j| = r_j`."""
+    r"""Return the natural partition `R = disjoint union over j of R[j]` with `|R[j]| = r[j]`."""
     R_partition = []
     start = 0
     for rj in r_values:
@@ -385,7 +393,7 @@ def _levels_for_positive_copies(A, j):
             levels.extend([k] * int(A[k, j]))
     return levels
 
-#If A[k, j] = -2, then level k appears two times.
+# If A[k, j] = -2, then level k appears two times.
 def _levels_for_negative_copies(A, j):
     r"""Return the `k^-` level sequence for variable ``j`` (pre-padding)."""
     levels = []
@@ -394,6 +402,7 @@ def _levels_for_negative_copies(A, j):
             levels.extend([k] * int(-A[k, j]))
     return levels
 
+
 def _pad_to_length(seq: list, target_len: int, fill_value: int) -> list:
     r"""Return ``seq`` padded to ``target_len`` with ``fill_value``."""
     return list(seq) + [fill_value] * (target_len - len(seq))
@@ -401,10 +410,10 @@ def _pad_to_length(seq: list, target_len: int, fill_value: int) -> list:
 
 def _make_stage1_variables(vars_list, k_values):
     r"""
-    Introduce chain variables `x_{j,0}, \ldots, x_{j,k_j}`.
+    Introduce chain variables `x[j,0], ..., x[j,k[j]]`.
 
     Parenthesized superscripts mark the binary-chain index, e.g.
-    `y^{(0)}, y^{(1)}`, kept visually distinct from the stage-2 square-bracket
+    `y_chain[0], y_chain[1]`, kept visually distinct from the stage-2 square-bracket
     copy index.
     """
     new_vars_grouped = []
@@ -419,12 +428,13 @@ def _make_stage1_variables(vars_list, k_values):
         new_vars_grouped.append(group)
     return new_vars_grouped
 
+
 def _make_stage2_copies_and_complements(vars_list, r_values):
     r"""
     Create variable copies and complements for the Theorem 3.2 boxes.
 
-    If `r_j > 1`, introduce square-bracket copies `y_j^{[1]}, \ldots, y_j^{[r_j]}`.
-    If `r_j = 1`, reuse the original variable as the single copy.
+    If `r[j] > 1`, introduce square-bracket copies `y_copy[j,1], ..., y_copy[j,r[j]]`.
+    If `r[j] = 1`, reuse the original variable as the single copy.
     """
     copied_vars = []
     complements = []
@@ -453,17 +463,18 @@ def _make_stage2_copies_and_complements(vars_list, r_values):
 
     return copied_vars, complements, copy_identification_rules
 
+
 #### Lemma 3.1: coefficient reduction ####
 
 def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=None):
     r"""
-    Reduce `A y = b` to a system with `{-1, 0, 1, 2}`-coefficients.
+    Reduce `A*y = b` to a system with `{-1, 0, 1, 2}`-coefficients.
 
-    Lemma 3.1 of [DLO2004]_ converts `P = {y >= 0 : A y = b}` into
-    `Q = {x >= 0 : C x = d}` with `C \in {-1, 0, 1, 2}`. Rational entries
+    Lemma 3.1 of [DLO2004]_ converts `P = {y >= 0 : A*y = b}` into
+    `Q = {x >= 0 : C*x = d}` with `C in {-1, 0, 1, 2}`. Rational entries
     are cleared row by row, then each coefficient is expanded in binary. The
     new equations use only small coefficients, at the cost of introducing chain
-    variables `x_{j,0}, \ldots, x_{j,k_j}` linked by `2 x_{j,s} - x_{j,s+1} = 0`.
+    variables `x[j,0], ..., x[j,k[j]]` linked by `2*x[j,s] - x[j,s+1] == 0`.
 
     INPUT:
 
@@ -494,17 +505,17 @@ def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=No
     if vars_list is None:
         vars_list = _make_input_variables(ncols)
 
-    # (Lemma 3.1): compute k_j.
+    # (Lemma 3.1): compute k[j].
     k_values = [_k_j(A, j) for j in range(ncols)]
 
-    # Introduce variables x_{j,0}, ..., x_{j,k_j}.
+    # Introduce variables x[j,0], ..., x[j,k[j]].
     new_vars_grouped = _make_stage1_variables(vars_list, k_values)
     new_vars_list = [v for group in new_vars_grouped for v in group]
 
-    # sigma_1(y_j) = x_{j,0}.
+    # sigma_1(y[j]) = x[j,0].
     sigma_1 = {vars_list[j]: new_vars_grouped[j][0] for j in range(ncols)}
 
-    # Doubling-chain equations 2 x_{j,s} - x_{j,s+1} = 0.
+    # Doubling-chain equations 2*x[j,s] - x[j,s+1] == 0.
     new_constraints = []
     n_chain = 0
     for j in range(ncols):
@@ -514,7 +525,7 @@ def coefficient_reduce_from_matrix(A, b, vars_list=None, original_constraints=No
             )
             n_chain += 1
 
-    # Rewrite each row using binary expansion of |a_{i,j}|.
+    # Rewrite each row using binary expansion of |A[i,j]|.
     for i in range(nrows):
         new_lhs = 0
         for j in range(ncols):
@@ -551,7 +562,7 @@ def coefficient_reduce(P):
     Coefficient-reduce a standard-form Sage ``Polyhedron``.
 
     Polyhedron-in entry point for :func:`coefficient_reduce_from_matrix`. The
-    polyhedron must represent `{y >= 0 : A y = b}`.
+    polyhedron must represent `{y >= 0 : A*y = b}`.
 
     EXAMPLES::
 
@@ -567,24 +578,25 @@ def coefficient_reduce(P):
     A, b = _polyhedron_to_Ab(P)
     return coefficient_reduce_from_matrix(A, b)
 
+
 #### Theorem 3.2: plane-sum entry-forbidden 3-way transportation embedding ####
 
 def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,original_constraints=None):
     r"""
-    Build the 3-way transportation array and marginals from `A y = b`.
+    Build the 3-way transportation array and marginals from `A*y = b`.
 
     Theorem 3.2 of [DLO2004]_ runs the array-construction step directly,
-    without coefficient reduction. Each variable `y_j` and its complement
-    `\bar y_j = U - y_j` are placed in cyclically arranged enabled entries of
-    the box `R_j \times R_j \times H`, and equation `k` is encoded by the
-    horizontal plane-sum `w_k = b_k + U \sum_{j : a_{k,j} < 0} |a_{k,j}|`.
+    without coefficient reduction. Each variable `y[j]` and its complement
+    `bar_y[j] = U - y[j]` are placed in cyclically arranged enabled entries of
+    the box `R[j] x R[j] x H`, and equation `k` is encoded by the
+    horizontal plane-sum `w[k] = b[k] + U * sum(abs(A[k,j]) for j with A[k,j] < 0)`.
 
     INPUT:
 
     - ``A`` -- integer matrix (typically the Lemma 3.1 output)
     - ``b`` -- integer column matrix, vector, or list
     - ``vars_list`` -- (optional) symbolic variables for `y`
-    - ``U`` -- (optional) upper bound on `y_j`; a positive symbol by default
+    - ``U`` -- (optional) upper bound on `y[j]`; a positive symbol by default
     - ``original_constraints`` -- (optional) symbolic equations for display
 
     OUTPUT: a :class:`TransportationEmbeddingResult`. The field ``tensor_M`` is
@@ -615,10 +627,10 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
         U = SR.symbol("U")
         assume(U > 0)
 
-    # r_j.
+    # r[j].
     r_values = [_r_j(A, j) for j in range(ncols)]
 
-    #  nondegenerate-box guard.
+    # Nondegenerate-box guard.
     zero_cols = [j for j, rj in enumerate(r_values) if rj == 0]
     if zero_cols:
         offenders = ", ".join(str(vars_list[j]) for j in zero_cols)
@@ -628,7 +640,7 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
             f"every variable must appear in at least one equation"
         )
 
-    # Partition R = disjoint union R_j with |R_j| = r_j.
+    # Partition R = disjoint union R[j] with |R[j]| = r[j].
     R_partition = _partition_R(r_values)
     r = sum(r_values)
     h = nrows + 1
@@ -685,7 +697,7 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
     # Forbidden set S as the complement of V.
     zero_set_S = set(product(range(r), range(r), range(h))) - active_set_V
 
-    # sigma_2(y_j) is the first positive-copy coordinate.
+    # sigma_2(y[j]) is the first positive-copy coordinate.
     sigma_2 = {
         vars_list[j]: (R_partition[j][0], R_partition[j][0], k_plus[j][0])
         for j in range(ncols)
@@ -718,6 +730,7 @@ def polytope_3waytransportation_from_matrix(A, b, vars_list=None, U=None,origina
 
     return result
 
+
 #### Polytope 3-way transportation embedding ####
 
 def polytope_3waytransportation(P, U=None):
@@ -744,26 +757,27 @@ def polytope_3waytransportation(P, U=None):
     A, b = _polyhedron_to_Ab(P)
     return polytope_3waytransportation_from_matrix(A, b, U=U)
 
+
 #### Theorem 1: coefficient-reduce, embed, then compose ####
 
 def transportation_face_embedding_from_matrix(A, b, vars_list=None, U=None, original_constraints=None):
     r"""
-    Embed the standard-form system A y = b into a face of a 3-way transportation polytope.
+    Embed the standard-form system A*y = b into a face of a 3-way transportation polytope.
     Composes coefficient reduction (Lemma 3.1) and tensor construction (Theorem 3.2)
     from [DLO2004]_. The tensor's plane marginals encode the reduced system via the
-    composite coordinate map sigma = sigma_2 ∘ sigma_1.
+    composite coordinate map sigma = sigma_2 after sigma_1.
 
     INPUT:
 
     - ``A`` -- integer or rational matrix
     - ``b`` -- integer or rational column matrix, vector, or list
     - ``vars_list`` -- (optional) symbolic variables for `y`
-    - ``U`` -- (optional) upper bound on `y_j`; a positive symbol by default
+    - ``U`` -- (optional) upper bound on `y[j]`; a positive symbol by default
     - ``original_constraints`` -- (optional) symbolic equations for display
 
     OUTPUT: a :class:`TransportationFaceEmbeddingResult`. Call its ``verify()``
     method to check both stage invariants and the composition
-    `\sigma = \sigma_2 \circ \sigma_1`.
+    `sigma = sigma_2 after sigma_1`.
 
     EXAMPLES::
 
@@ -821,7 +835,7 @@ def transportation_face_embedding(P, U=None):
 
     Recommended entry point for Polyhedron input (Theorem 1 of [DLO2004]_). The
     polyhedron must be bounded, rational, and in standard form
-    `{y >= 0 : A y = b}`.
+    `{y >= 0 : A*y = b}`.
 
     EXAMPLES::
 
@@ -839,6 +853,7 @@ def transportation_face_embedding(P, U=None):
     """
     A, b = _polyhedron_to_Ab(P)
     return transportation_face_embedding_from_matrix(A, b, U=U)
+
 
 #### Internal: re-extract (A, b) from the reduced symbolic constraints ####
 
